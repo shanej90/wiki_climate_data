@@ -14,7 +14,7 @@ library(tidyverse)
 climate_data <- read.csv("data/scraped_data.csv", stringsAsFactors = F)
 
 #tkcc descriptions
-tkcc <- read.csv("data/tkcc_classifications.csv")
+tkcc <- read.csv("data/climate_classifications.csv")
 
 #reformat data-------------------------------------
 
@@ -31,13 +31,13 @@ wrangled <- climate_data |>
   filter(value == max(value, na.rm = T)) |>
   ungroup() |>
   #only relevant classifications, in C/mm
-  filter(metric %in% c("Daily mean", "Average precipitation") & units %in% c("°C", "mm")) |>
+  filter(metric %in% c("Daily mean", "Average precipitation") & str_detect(units,"C|mm")) |>
   select(-units) |>
   distinct() |>
   pivot_wider(names_from  = metric, values_from = value) |>
   filter(!is.na(`Daily mean` & !is.na(`Average precipitation`)))
 
-#get ktcc classifications-----------------------------------------------------
+#get climate classifications-----------------------------------------------------
 
 #locations
 locations <- unique(wrangled$city)
@@ -48,7 +48,7 @@ datasets <- lapply(
   function(x) wrangled |> filter(city == x)
 )
 
-#get classifcations
+#get ktc classifcations
 ktc_classes <- list()
 
 for (i in 1:length(datasets)) {
@@ -57,3 +57,14 @@ for (i in 1:length(datasets)) {
   
 }
 names(ktc_classes) <- locations
+
+#get kgc classes
+kgc_classes <- list()
+
+for (i in 1:length(datasets)) {
+  
+  kgc_classes[i] <- get_kgc_class(datasets[[i]], Month, `Daily mean`, `Average precipitation`, hemisphere)
+  
+}
+names(kgc_classes) <- locations
+

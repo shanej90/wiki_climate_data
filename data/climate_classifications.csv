@@ -1,0 +1,44 @@
+1,1,Ar,Tropical wet
+2,1,As,Tropical dry-summer
+3,1,Aw,Tropical dry-winter
+4,1,Am,Tropical monsoon
+5,1,BWh,Hot desert
+6,1,BWk,Cold desert
+7,1,BSh,Hot steppe
+8,1,BSk,Cold steppe
+9,1,Cs,Subtropical dry-summer (Mediterranean)
+10,1,Cw,Subtropical dry-winter
+11,1,Cf,Subtropical humid
+12,1,Do,Temperate marine
+13,1,Dc,Temperate continental
+14,1,E,Boreal
+15,1,Ft,Tundra
+16,1,Fi,Ice-cap
+17,2,Af,Tropical rainforest
+18,2,Am,Tropical monsoon
+19,2,Aw,Tropical savanna
+20,2,BWh,Hot desert
+21,2,BWk,Cold desert
+22,2,BSh,Hot semi-arid
+23,2,BSk,Cold semi-arid
+24,2,Cfa,Humid subtropical
+25,2,Cfb,Temperate oceanic
+26,2,Cfc,Subpolar oceanic
+27,2,Cwc,Cold subtropical highland
+28,2,Csa,Hot-summer Mediterranean
+29,2,Csb,Warm-summer Mediterranean
+30,2,Csc,Cold-summer Mediterranean
+31,2,Dfa,Hot-summer humid continental
+32,2,Dfb,Warm-summer humid continental
+33,2,Dfc,Subarctic
+34,2,Dfd,Extremely cold subarctic
+35,2,Dwa,Monsoon-influenced hot-summer contintnetal
+36,2,Dwb,Monsoon-influenced warm-summer continental
+37,2,Dwc,Monsoon-influenced subarctic climate
+38,2,Dwd,Monsson-influenced extremely cold subarctic
+39,2,Dsa,Mediterranean-influenced hot-summer humid continental
+40,2,Dsb,Mediterranean-influenced warm-summer humid continental
+41,2,Dsc,Mediterranean-influenced subarctic
+42,2,Dsd,Mediterranean-influenced extremely cold subarctic
+43,2,ET,Tundra
+44,2,EF,Ice cap

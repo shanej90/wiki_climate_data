@@ -270,7 +270,7 @@ get_ktc_class <- function(df, month_col, temp_col, prcp_col, hemisphere_col) {
 
 #add koppen-geigfer classification##############################################
 
-get_kgcc_class <- function(df, month_col, temp_col, prcp_col, hemisphere_col) {
+get_kgc_class <- function(df, month_col, temp_col, prcp_col, hemisphere_col) {
   
   #arrange by month
   df <- df |>
@@ -299,7 +299,136 @@ get_kgcc_class <- function(df, month_col, temp_col, prcp_col, hemisphere_col) {
   #mean annual temp
   mt <- df |> pull({{temp_col}}) |> mean(na.rm = T)
   
+  #topical checks###########################################
   
+  #coldest month temp
+  cmt <- df |> pull({{temp_col}}) |> min(na.rm = T)
+  
+  #driest month precipitation
+  dmp <- df |> pull({{prcp_col}}) |> min(na.rm = T)
+  
+  #topical mw threshold
+  tmwt <- 100 - (tr / 25)
+  
+  #dry checks################################################
+  
+  #% prcp in high/low sub months - initial dataframe
+  psvw <- df |>
+    mutate(high_sun = ifelse({{month_col}} %in% high_sun_months, "Yes", "No")) |>
+    group_by(high_sun) |>
+    summarise(prcp = sum({{prcp_col}}, na.rm = T)) |>
+    ungroup() |>
+    mutate(pct = 100 * prcp / sum(prcp))
+  
+  #% prcp high sun months
+  pphs <- psvw |>
+    filter(high_sun == "Yes") |>
+    pull(pct)
+  
+  #dry climate prcp threshold
+  dcpt <- case_when(
+    pphs >= 70 ~ 280,
+    pphs < 70 & pphs >= 30 ~ 140,
+    TRUE ~ 0
+  ) |> 
+    unique()
+  
+  #warmest month temp
+  wmt <- df |> pull({{temp_col}}) |> max(na.rm = T)
+  
+  #temperature of coldest month already calculated in tropical checks
+  
+  #temperate#################################################
+  
+  #coldest month climates already checked
+  
+  #% prcp in high sun months checked
+  
+  #wramest month temp checked
+  
+  #number of months >= 10C
+  m10 <- df |>
+    filter({{temp_col}} >= 10) |>
+    nrow()
+  
+  #wettest low-sun month prcp
+  wlsp <- df |>
+    filter(!{{month_col}} %in% high_sun_months) |>
+    filter({{prcp_col}} == max({{prcp_col}}, na.rm = T)) |>
+    pull({{prcp_col}})
+  
+  #driest low-sub month prcp
+  dlsp <- df |>
+    filter(!{{month_col}} %in% high_sun_months) |>
+    filter({{prcp_col}} == min({{prcp_col}}, na.rm = T)) |>
+    pull({{prcp_col}})
+  
+  #wettest high sun month prcp
+  whsp <- df |>
+    filter({{month_col}} %in% high_sun_months) |>
+    filter({{prcp_col}} == max({{prcp_col}}, na.rm = T)) |>
+    pull({{prcp_col}})
+  
+  #driest high sun month precipitation
+  dhsp <- df |>
+    filter({{month_col}} %in% high_sun_months) |>
+    filter({{prcp_col}} == min({{prcp_col}}, na.rm = T)) |>
+    pull({{prcp_col}})
+  
+  #wetetst low sun to driest high sun ratio
+  wlsp_dhsp <- wlsp / dhsp
+  
+  #wettest high sun to driest low sunb ratio
+  whsp_dlsp <- whsp / dlsp
+  
+  #continental##############################################
+  
+  #all checks already covered
+  
+  #polar/alp[ine########################################
+  
+  #all checks already covered
+  
+  #assign classification########################################
+  
+  kgc_class <- case_when(
+    #tropical
+    cmt >= 18 & dmp >= 60 ~ "Af",
+    cmt >= 18 & dmp < 60 & dmp >= tmwt ~ "Am",
+    cmt >= 18 & dmp < 60 & dmp < tmwt ~ "Aw",
+    #dry
+    wmt >= 10 & tr < (dcpt / 2) & cmt > 0 ~ "BWh",
+    wmt >= 10 & tr < (dcpt / 2) & cmt <= 0 ~ "BWk",
+    wmt >= 10 & tr >= (dcpt / 2) & tr < dcpt & cmt > 0 ~ "BSh",
+    wmt >= 10 & tr >= (dcpt / 2) & tr < dcpt & cmt <= 0 ~ "BSk",
+    #temperate
+    cmt > 0 & wmt >= 22 & m10 >= 4 & whsp_dlsp >= 10 ~ "Cwa",
+    cmt > 0 & wmt < 22 & m10 >= 4 & whsp_dlsp >= 10 ~ "Cwb",
+    cmt > 0 & wmt < 22 & m10 > 0 & m10 < 4 & whsp_dlsp >= 10 ~ "Cwc",
+    cmt > 0 & wmt >= 22 & m10 >= 4 & wlsp_dhsp >= 3 & dhsp < 40 ~ "Csa",
+    cmt > 0 & wmt < 22 & m10 >= 4 & wlsp_dhsp >= 3 & dhsp < 40 ~ "Csb",
+    cmt > 0 & wmt < 22 & m10 > 0 & m10 < 4 & wlsp_dhsp >= 3 & dhsp < 40 ~ "Csc",
+    cmt > 0 & m10 >= 4 & wmt >= 22 & (whsp_dlsp < 10 | wlsp_dhsp < 3) ~ "Cfa",
+    cmt > 0 & m10 >= 4 & wmt < 22 & (whsp_dlsp < 10 | wlsp_dhsp < 3) ~ "Cfb",
+    cmt > 0 & m10 < 4 & m10 > 0 & (whsp_dlsp < 10 | wlsp_dhsp < 3) ~ "Cfc",
+    #continenta
+    cmt <= 0 & wmt >= 22 & m10 >= 4 & whsp_dlsp >= 10 ~ "Dwa",
+    cmt <= 0 & wmt < 22 & m10 >= 4 & whsp_dlsp >= 10 ~ "Dwb",
+    cmt <= 0 & wmt < 22 & m10 > 0 & m10 < 4 & whsp_dlsp >= 10 ~ "Dwc",
+    cmt <= 0 & cmt < -38 & m10 > 0 & m10 < 4 & whsp_dlsp >= 10 ~ "Dwd",
+    cmt <= 0 & wmt >= 22 & m10 >= 4 & wlsp_dhsp >= 3 & dhsp < 30 ~ "Dsa",
+    cmt <= 0 & wmt < 22 & m10 >= 4 & wlsp_dhsp >= 3 & dhsp < 30 ~ "Dsb",
+    cmt <= 0 & wmt < 22 & m10 > 0 & m10 < 4 & wlsp_dhsp >= 3 & dhsp < 30 ~ "Dsc",
+    cmt <= 0 & cmt < -38 & m10 > 0 & m10 < 4 & wlsp_dhsp >= 3 & dhsp < 30 ~ "Dsd",
+    cmt <= 0 & m10 >= 4 & wmt >= 22 & (whsp_dlsp < 10 | wlsp_dhsp < 3) ~ "Dfa",
+    cmt <= 0 & m10 >= 4 & wmt < 22 & (whsp_dlsp < 10 | wlsp_dhsp < 3) ~ "Dfb",
+    cmt <= 0 & m10 < 4 & m10 > 0 & (whsp_dlsp < 10 | wlsp_dhsp < 3) ~ "Dfc",
+    cmt <= 0 & cmt < -38 & m10 > 0 & m10 < 4 & (whsp_dlsp < 10 | wlsp_dhsp < 3) ~ "Dfd",
+    #polar
+    wmt >= 0 & wmt < 10 ~ "ET",
+    wmt < 0 ~ "EF" 
+  ) |>
+    unique()
   
 }
 
