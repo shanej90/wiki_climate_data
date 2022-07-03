@@ -1,12 +1,66 @@
-#scrape wikipedia data-
+#reading from wikipedia-----------------------------------------------------
 
-scrape_wiki <- function(location) {
+#get location from wiki url
+get_location_from_url <- function(.url) {
   
-  #set url
-  url <- wikiDataset$url[match(location, wikiDataset$city_name)]
+  #get city cpde from url table
+  city_code <- dbReadTable(conn, "urls") |>
+    filter(url == .url) |>
+    pull(city_code)
   
   #read page
-  html <- read_html(url)
+  html <- read_html(.url)
+  
+  #get h1
+  title <- html |> html_nodes("#firstHeading") |> html_text()
+  
+  #grab country
+  country <- html |> 
+    html_nodes(".infobox") |> 
+    html_table() |> 
+    as.data.frame() |> 
+    setNames(c("x1", "x2")) |>
+    filter(x1 == "Country") |>
+    pull(x2)
+  
+  #country html
+  country_html <- read_html(paste0("https://en.wikipedia.org/wiki/", country))
+  
+  #get country alpha2 from infobox
+  country_iso2 <- country_html |>
+    html_nodes(".infobox") |>
+    html_table() |>
+    as.data.frame() |>
+    setNames(c("x1", "x2")) |>
+    filter(x1 == "ISO 3166 code") |>
+    pull(x2)
+  
+  #final dataframe
+  df <- data.frame(
+    "id" = city_code,
+    "city_name" = title,
+    "alpha2" = country_iso2
+  )
+  
+  
+}
+
+#scrape wikipedia data-
+get_climate_data <- function(.url) {
+  
+  #set url
+  #url <- wikiDataset$url[match(location, wikiDataset$city_name)]
+  
+  #connect to db
+  conn <- connect_to_db()
+  
+  #pull urls table to get city code
+  city <- dbReadTable(conn, "urls") |>
+    filter(url == .url) |>
+    pull(city_code)
+  
+  #read page
+  html <- read_html(.url)
   
   #get tables
   all_tbls <- html_nodes(html, "table")
@@ -81,7 +135,7 @@ scrape_wiki <- function(location) {
     select(-temp2) |>
     #tidy up data
     mutate(
-      city = location,
+      city_code = location,
       time_period = timeband, 
       value = ifelse(is.na(as.numeric(value)), -as.numeric(substr(value, 2, length(value))), as.numeric(value))
     ) |>
@@ -101,13 +155,225 @@ scrape_wiki <- function(location) {
         TRUE ~ metric
       )
     ) |>
-    filter(!is.na(units))
+    filter(!is.na(units)) |>
+    transmute(
+      city_code = city,
+      month = Month,
+      metric,
+      units,
+      value,
+      time_period
+    )
   
   
 }
 
-#define ktc class----------------------
 
+
+#update sqlite db-------------------------------------------------------
+
+#connect to database
+connect_to_db <- function() {
+  
+  dbConnect(RSQLite::SQLite(), "wiki-urls.db")
+  
+}
+
+#add urls
+add_url <- function(conn, .url) {
+  
+  #check existing data
+  current_data <- dbReadTable(conn, "urls")
+  
+  #is current url already in?
+  if(.url %in% current_data$url) {
+    
+    stop("URL already in database. Upload aborted.")
+    
+  }
+  
+  #create upload df
+  upload <- data.frame(
+    "url" = .url,
+    "city_code" = max(current_data$city_code) + 1
+  )
+  
+  #write to sqlite
+  dbAppendTable(conn, "urls", upload_df)
+  
+  
+}
+
+#add cities
+add_city <- function(conn, city_data) {
+  
+  #pull the countries table
+  countries <- dbReadTable(conn, "countries")
+  
+  #existing cities data
+  cities <- dbReadTable(conn, "cities")
+  
+  #make sure city is in url tanle
+  urls <- dbReadTable(conn, "urls")
+  
+  if(!unique(city_data$city_code) %in% urls$city_code) {
+    
+    stop("No matching URL found - upload this first. Aborting process.")
+    
+  }
+  
+  #check if city alread exists
+  if(city_data$city_code %in% cities$id) {
+    
+    stop("City already in DB, aborting process.")
+    
+  }
+  
+  #get coutry code, remove iso2
+  upload_df <- city_data |>
+    left_join(
+      countries |>
+        select(alpha2, country_code),
+      by = "alpha2"
+    ) |>
+    select(-alpha2) |>
+    rename(id = city_code)
+  
+  #write to sqllite
+  dbAppendTable(conn, "cities", upload_df)
+  
+  
+}
+
+#add climate data
+add_climate_data <- function(conn, climate_data) {
+  
+  #cities table
+  cities <- dbReadTable(conn, "cities")
+  
+  #check city is in table
+  if(!unique(climate_data$city_code) %in% cities$id) {
+    
+    stop("City not found in 'cities' table - upload first. Aborting process.")
+    
+  }
+  
+  #climate data table
+  current_data <- dbReadTable(conn, "climate_data")
+  
+  #check if climate data already in
+  if(unique(climate_data$city_code) %in% current_data$city_code) {
+    
+    stop("City already has a record in DB, aborting process.")
+    
+  }
+  
+  #send in data
+  dbAppendTable(conn, "climate_data", climate_data)
+  
+}
+
+#add climate classifications
+add_climate_classes <- function(conn, city_id) {
+  
+  #climate data
+  raw_data <- dbReadTable(conn, "climate_data") |>
+    filter(city_code == city_id)
+  
+  #check data avilable
+  if(!city_id %in% raw_data$city_code) {
+    
+    stop("City not found in database, aborting process.")
+    
+  }
+  
+  #city data to identify country
+  cities <- dbReadTable(conn, "cities") |>
+    filter(id == city_id)
+  
+  #country data to get hemisphere
+  country <- dbReadTable(conn, "countries") |>
+    filter(country_code == pull(cities$country_code))
+  
+  #reformat data
+  reformatted <- raw_data |>
+    #sort out where both rainfall and precipitation included
+    mutate(
+      metric = ifelse(
+        metric %in% c("Average rainfall", "Average precipitation"),
+        "Average precipitation",
+        metric
+      )
+    ) |>
+    group_by(country_code, city_code, month, metric, units) |>
+    filter(value == max(value, na.rm = T)) |>
+    ungroup() |>
+    #only relevant classifications, in C/mm
+    filter(metric %in% c("Daily mean", "Average precipitation") & str_detect(units,"C|mm")) |>
+    select(-units) |>
+    distinct() |>
+    pivot_wider(names_from  = metric, values_from = value) |>
+    filter(!is.na(`Daily mean` & !is.na(`Average precipitation`))) |>
+    #add oin hemisphere
+    left_join(
+      countries |>
+        select(country_code, hemisphere),
+      by = "country_code"
+    )
+  
+  #check there is data left to process
+  if(nrow(reformatted == 0)) {
+    
+    
+    stop("Not enough data for city to classify, aborting process.")
+    
+  }
+  
+  #ktc class
+  ktc_class <- get_ktc_class(
+    reformatted,
+    month,
+    `Daily mean`,
+    `Average precipitation`,
+    hemisphere
+    )
+  
+  #kgc class
+  kgc_class <- get_kgc_class(
+    reformatted,
+    month,
+    `Daily mean`,
+    `Average precipitation`,
+    hemisphere
+  )
+  
+  #climate class lookup
+  class_lookup <- dbReadTable(conn, "climate_class")
+  
+  #convert ktc/kgc to number
+  ktc_num <- class_lookup |> 
+    filter(classification_id == 1 & class_code == ktc_class) |>
+    pull(class_id)
+  
+  kgc_num <- class_lookup |>
+    filter(classification_id == 2 & class_code == kgc_class) |>
+    pull(class_id)
+  
+  #upload df
+  upload_df <- data.frame(
+    "class_id" = c(ktc_num, kgc_num),
+    "city_id" = rep(city_id, 2)
+  )
+  
+  #upload
+  dbAppendTable(conn, "classes_per_city", upload_df)
+    
+  
+}
+
+#climatye sclasses----------------------------------------------
+
+#ktc
 get_ktc_class <- function(df, month_col, temp_col, prcp_col, hemisphere_col) {
   
   #
@@ -254,7 +520,7 @@ get_ktc_class <- function(df, month_col, temp_col, prcp_col, hemisphere_col) {
     #subtropical
     m10 >= 8 & cmt < 18 & tr < 890 & dsp < 30 & pps <= (ppw / 3) ~ "Cs",
     m10 >= 8 & cmt < 18 & pps >= (10 * ppw)  ~ "Cw",
-    m10 >= 8 & cmt < 18 & dsp >= 30 & pps > (ppw /3) & pps < (10 * ppw) ~ "Cf",
+    m10 >= 8 & cmt < 18 ~ "Cf",
     #temperate
     m10 < 8 & m10 >= 4 & cmt > 0 ~ "Do",
     m10 < 8 & m10 >= 4 & cmt <= 0 ~ "Dc",
@@ -268,8 +534,7 @@ get_ktc_class <- function(df, month_col, temp_col, prcp_col, hemisphere_col) {
   
 }
 
-#add koppen-geigfer classification##############################################
-
+#add koppen-geigfer classification
 get_kgc_class <- function(df, month_col, temp_col, prcp_col, hemisphere_col) {
   
   #arrange by month
@@ -327,9 +592,9 @@ get_kgc_class <- function(df, month_col, temp_col, prcp_col, hemisphere_col) {
   
   #dry climate prcp threshold
   dcpt <- case_when(
-    pphs >= 70 ~ 280,
-    pphs < 70 & pphs >= 30 ~ 140,
-    TRUE ~ 0
+    pphs >= 70 ~ (mt * 20) + 280,
+    pphs < 70 & pphs >= 30 ~ (mt * 20) + 140,
+    TRUE ~ mt * 20
   ) |> 
     unique()
   
@@ -395,7 +660,8 @@ get_kgc_class <- function(df, month_col, temp_col, prcp_col, hemisphere_col) {
     #tropical
     cmt >= 18 & dmp >= 60 ~ "Af",
     cmt >= 18 & dmp < 60 & dmp >= tmwt ~ "Am",
-    cmt >= 18 & dmp < 60 & dmp < tmwt ~ "Aw",
+    cmt >= 18 & dmp < 60 & dmp < tmwt & pphs >= 50 ~ "Aw",
+    cmt >= 18 & dmp < 60 & dmp < tmwt & pphs < 50 ~ "As",
     #dry
     wmt >= 10 & tr < (dcpt / 2) & cmt > 0 ~ "BWh",
     wmt >= 10 & tr < (dcpt / 2) & cmt <= 0 ~ "BWk",
@@ -431,5 +697,42 @@ get_kgc_class <- function(df, month_col, temp_col, prcp_col, hemisphere_col) {
     unique()
   
 }
+
+#FULL UPLOAD PROCESS-------------------------------------------------------
+
+full_data_upload <- function(URL) {
+  
+  #connect to database
+  dbCon <- connect_to_db()
+  
+  #upload URL
+  add_url(dbCon, URL)
+  
+  message("Uploaded URL")
+  
+  #get location from the URL
+  CITY <- get_location_from_url(URL)
+  
+  #upload the city
+  add_city(dbCon, CITY)
+  
+  message("Uploaded city")
+  
+  #scrtape the climate data
+  CLIMATE <- get_climate_data(URL)
+  
+  #upload climate data
+  add_climate_data(dbCon, CLIMATE)
+  
+  message("Uploaded climate data")
+  
+  #add climate classes
+  add_climate_classes(dbCon, CITY$id)
+  
+  message("Uploaded climate classifications - complete")
+  
+}
+
+
 
 
