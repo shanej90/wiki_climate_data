@@ -116,4 +116,3 @@ city_list <- tables[["cities"]] |>
 
 metrics <- tables[["climate_data"]] |>
   mutate(ui_label = paste0(metric, " (", units, ")"))
-
