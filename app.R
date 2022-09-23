@@ -51,7 +51,14 @@ ui <- dashboardPage(
     fluidRow(
       
       #place by place comparison
-      box(plotlyOutput("comp_plot"), width = 12)
+      box(
+        tabsetPanel(
+          type = "tabs",
+          tabPanel("Line plot", plotlyOutput("comp_plot")),
+          tabPanel("Heatmap", plotlyOutput("heatmap"))
+        ),
+        width = 12
+        )
       
     ),
     
@@ -112,7 +119,10 @@ server <- function(input, output) {
         ui_label == input$metric &
           city_name %in% c(input$location1, input$location2)
       ) |>
-      mutate(month = factor(month, levels = month.abb))
+      mutate(
+        month = factor(month, levels = month.abb),
+        city_name = factor(city_name, levels = c(input$location1, input$location2))
+        )
     
     #plot
     plot <- ggplotly(
@@ -159,6 +169,94 @@ server <- function(input, output) {
     )
     
   })
+  
+  #heatmap version
+  
+  make_heatmap <- reactive({
+    
+    #set colour options
+    if(str_detect(input$metric, "°C|°F")) {
+      
+      colours <- c("low" = "#4575b4", "mid" = "#ffffbf", "high" = "#d73027")
+      
+    }
+    
+    if(str_detect(input$metric, "mm|inches|days")) {
+      
+      colours <- c("low" = "#f7fbff", "mid" = "#6baed6", "high" = "#08306b")
+      
+    }
+    
+    if(str_detect(input$metric, "hours")) {
+      
+      colours <- c("low" = "#fff5f0", "mid" = "#fb6a4a", "high" = "#67000d")
+      
+    }
+    
+    #limits for chosen metric
+    value_lims <- metrics |>
+      left_join(
+        city_list |> transmute(id, city_name = ui_label),
+        by = c("city_code" = "id")
+      ) |>
+      filter(ui_label == input$metric)
+    
+    #get the climate data and filter to relevant metric and settlements
+    df <- metrics |>
+      left_join(
+        city_list |> transmute(id, city_name = ui_label),
+        by = c("city_code" = "id")
+      ) |>
+      filter(
+        ui_label == input$metric &
+          city_name %in% c(input$location1, input$location2)
+      ) |>
+      mutate(
+        month = factor(month, levels = month.abb),
+        city_name = factor(city_name, levels = c(input$location2, input$location1))
+        )
+    
+    #plot
+    plot <- ggplotly(
+      ggplot(
+        df,
+        aes(x = month, y = city_name, fill = value)
+      ) +
+        #geoms
+        geom_tile(
+          colour = "lightgray",
+          aes(
+            text = paste(
+              "Settlement: ", city_name,
+              "<br>Metric: ", metric,
+              "<br>Month: ", month,
+              "<br>Value: ", paste0(round(value, 2), units),
+              "<br>Time period: ", ifelse(!is.na(time_period), time_period, "unknown")
+              )
+            )
+          ) +
+        #scales
+        scale_x_discrete(name = "Month") +
+        scale_y_discrete(name = "Settlement") +
+        scale_fill_gradient2(
+          name = paste0("Value (", unique(df$units), ")"), 
+          limits = c(min(value_lims$value, na.rm = T), max(value_lims$value, na.rm = T)),
+          low = colours["low"],
+          mid = colours["mid"],
+          high = colours["high"]
+        ) +
+        theme_minimal() +
+        theme(
+          axis.title = element_text(face = "bold"),
+          legend.title = element_text(face = "bold"),
+          panel.grid.minor = element_blank()
+        ),
+      tooltip = "text"
+    )
+    
+    
+  })
+  
   
   #climate class tbl 1
   make_cc1_tbl <- reactive({
@@ -294,6 +392,7 @@ server <- function(input, output) {
   
   #comparison plot
   output$comp_plot <- renderPlotly(make_comp_plot())
+  output$heatmap <- renderPlotly(make_heatmap())
   
   #summary tables
   output$cc1 <- renderDT(make_cc1_tbl())
