@@ -1,7 +1,7 @@
 #reading from wikipedia-----------------------------------------------------
 
 #get location from wiki url
-get_location_from_url <- function(.url) {
+get_location_from_url <- function(.url, conn) {
   
   #get city cpde from url table
   city_code <- dbReadTable(conn, "urls") |>
@@ -12,34 +12,105 @@ get_location_from_url <- function(.url) {
   html <- read_html(.url)
   
   #get h1
-  title <- html |> html_nodes("#firstHeading") |> html_text()
+  title <- html |> html_nodes("#firstHeading") |> html_text() 
+  
+  #get coordinates
+  latitude <- html |> html_nodes(".latitude") |> html_text() |> unique()
+  longitude <- html |> html_nodes(".longitude") |> html_text() |> unique()
+  # coords_url <- html |> html_nodes(".external") |> html_attr("href")
+  # coords_url <- coords_url[str_detect(coords_url, "geohack")]
+  # coords <- coords_url[[1]] |> str_extract("(?<=params\\=)(.*)(?=region)")
+  # latitude <- coords |> str_extract("(.*)(?=_S|_N)")
+  # longitude <- coords |> str_extract("(?<=S_|N_)(.*)(?=_E|_W)")
+  
+  #extract degrees and minites
+  lat_d <- str_extract(latitude, "(.*)(?=°)")
+  lat_m <- str_extract(latitude, "(?<=°)(.*)(?=′)")
+  #lat_d <- word(latitude, 1, sep = "_")
+  #lat_m <- word(latitude, 2, sep = "_")
+  lat_multiplier <- ifelse(str_detect(latitude, "N"), 1, -1)
+  
+  long_d <- str_extract(longitude, "(.*)(?=°)")
+  long_m <- str_extract(longitude, "(?<=°)(.*)(?=′)")
+  #long_d <- word(longitude, 1, sep = "_")
+  #long_m <- word(longitude, 2, sep = "_")
+  long_multiplier <- ifelse(str_detect(longitude, "E"), 1, -1)
+ 
+  #update latitude/longitude
+  latitude <- lat_multiplier * (as.numeric(lat_d) + (as.numeric(lat_m) / 60))
+  longitude <- long_multiplier * (as.numeric(long_d) + (as.numeric(lat_m) / 60))
   
   #grab country
-  country <- html |> 
+  country_tbl <- html |> 
     html_nodes(".infobox") |> 
-    html_table() |> 
-    as.data.frame() |> 
-    setNames(c("x1", "x2")) |>
-    filter(x1 == "Country") |>
-    pull(x2)
+    html_table()
+  
+  country_tbl <- as.data.frame(country_tbl[[1]]) |> clean_names()
+  
+  if(nrow(country_tbl) == 0) {
+    
+    country <- "To be determined"
+    
+  } else {
+    
+    country_data <- country_tbl %>%
+    filter(.[[1]] == "Country")
+    
+    country <- country_data[1, 2] |> 
+      str_remove("(?<=\\[)(.*)(?=\\])") |> 
+      str_remove("\\[") |> str_remove("\\]")
+    
+    if(is.na(country)) {country <- "To be determined"}
+    
+    if(country %in% c("England", "Scotland", "Wales", "Northern Ireland")) {
+      
+      country <- "United Kingdom"
+    }
+    
+    if(country == "Georgia") {country <- "Georgia_(country)"}
+    
+    if(nrow(country_data) == 0) {
+      
+      country <- "To be determined"
+      
+    }
+    
+    
+  }
   
   #country html
-  country_html <- read_html(paste0("https://en.wikipedia.org/wiki/", country))
+  if(country != "To be determined") {
+    
+    country_html <- read_html(paste0("https://en.wikipedia.org/wiki/", str_replace_all(country, " ", "_")))
+    
+  }
   
   #get country alpha2 from infobox
-  country_iso2 <- country_html |>
-    html_nodes(".infobox") |>
-    html_table() |>
-    as.data.frame() |>
-    setNames(c("x1", "x2")) |>
-    filter(x1 == "ISO 3166 code") |>
-    pull(x2)
+  if(country != "To be determined") {
+    
+    country_iso2 <- country_html |>
+      html_nodes(".infobox") |>
+      html_table()
+    
+    country_iso2 <-  as.data.frame(country_iso2[[1]])
+    
+    colnames(country_iso2) <- paste0("X", c(1:length(colnames(country_iso2))))
+      
+    country_iso2 <- country_iso2 |>
+      filter(X1 == "ISO 3166 code") |>
+      pull(X2)
+    
+    if(is_empty(country_iso2)) {country_iso2 <- "TB"}
+    
+  } else {country_iso2 <- "TB"}
   
   #final dataframe
   df <- data.frame(
     "id" = city_code,
-    "city_name" = title,
-    "alpha2" = country_iso2
+    "city_name" = title |> str_remove("Climate of "),
+    "alpha2" = substr(country_iso2, 1, 2),
+    "latitude" = ifelse(is_empty(latitude), NA_real_, latitude),
+    "longitude" = ifelse(is_empty(longitude), NA_real_, longitude)
   )
   
   
@@ -135,15 +206,8 @@ get_climate_data <- function(.url) {
     select(-temp2) |>
     #tidy up data
     mutate(
-      city_code = location,
       time_period = timeband, 
       value = ifelse(is.na(as.numeric(value)), -as.numeric(substr(value, 2, length(value))), as.numeric(value))
-    ) |>
-    #join on pertientn country data
-    left_join(
-      wikiDataset |>
-        transmute(city_name, country = name, hemisphere),
-      by = c("city" = "city_name")
     ) |>
     #standardise metrics/variables
     mutate(
@@ -163,7 +227,9 @@ get_climate_data <- function(.url) {
       units,
       value,
       time_period
-    )
+    ) |>
+    filter(!is.na(value)) |>
+    distinct()
   
   
 }
@@ -188,18 +254,22 @@ add_url <- function(conn, .url) {
   #is current url already in?
   if(.url %in% current_data$url) {
     
-    stop("URL already in database. Upload aborted.")
+    return("URL already in database. Upload aborted.")
     
   }
   
   #create upload df
   upload <- data.frame(
     "url" = .url,
-    "city_code" = max(current_data$city_code) + 1
+    "city_code" = ifelse(
+      max(current_data$city_code) >= 1,
+      max(current_data$city_code) + 1,
+      1
+    )
   )
   
   #write to sqlite
-  dbAppendTable(conn, "urls", upload_df)
+  dbAppendTable(conn, "urls", upload)
   
   
 }
@@ -216,16 +286,16 @@ add_city <- function(conn, city_data) {
   #make sure city is in url tanle
   urls <- dbReadTable(conn, "urls")
   
-  if(!unique(city_data$city_code) %in% urls$city_code) {
+  if(!unique(city_data$id) %in% urls$city_code) {
     
-    stop("No matching URL found - upload this first. Aborting process.")
-    
-  }
+    return("No matching URL found - upload this first. Aborting process.")
+  
+}
   
   #check if city alread exists
-  if(city_data$city_code %in% cities$id) {
+  if(city_data$id %in% cities$id) {
     
-    stop("City already in DB, aborting process.")
+    return("City already in DB, aborting process.")
     
   }
   
@@ -236,8 +306,13 @@ add_city <- function(conn, city_data) {
         select(alpha2, country_code),
       by = "alpha2"
     ) |>
-    select(-alpha2) |>
-    rename(id = city_code)
+    transmute(
+      id,
+      city_name,
+      country_code,
+      latitude,
+      longitude
+    )
   
   #write to sqllite
   dbAppendTable(conn, "cities", upload_df)
@@ -254,7 +329,7 @@ add_climate_data <- function(conn, climate_data) {
   #check city is in table
   if(!unique(climate_data$city_code) %in% cities$id) {
     
-    stop("City not found in 'cities' table - upload first. Aborting process.")
+    return("City not found in 'cities' table - upload first. Aborting process.")
     
   }
   
@@ -264,7 +339,7 @@ add_climate_data <- function(conn, climate_data) {
   #check if climate data already in
   if(unique(climate_data$city_code) %in% current_data$city_code) {
     
-    stop("City already has a record in DB, aborting process.")
+    return("City already has a record in DB, aborting process.")
     
   }
   
@@ -278,12 +353,21 @@ add_climate_classes <- function(conn, city_id) {
   
   #climate data
   raw_data <- dbReadTable(conn, "climate_data") |>
-    filter(city_code == city_id)
+    filter(city_code == city_id) |>
+    distinct(
+      city_code, 
+      month, 
+      metric, 
+      units,
+      value, 
+      time_period, 
+      .keep_all = T
+      )
   
   #check data avilable
   if(!city_id %in% raw_data$city_code) {
     
-    stop("City not found in database, aborting process.")
+    return("City not found in database, aborting process.")
     
   }
   
@@ -293,7 +377,20 @@ add_climate_classes <- function(conn, city_id) {
   
   #country data to get hemisphere
   country <- dbReadTable(conn, "countries") |>
-    filter(country_code == pull(cities$country_code))
+    filter(country_code == cities$country_code)
+  
+  #checx both daily mean and average precipiation are available
+  if(
+    !"Daily mean" %in% raw_data$metric | 
+    (
+      !"Average rainfall" %in% raw_data$metric &
+      !"Average precipitation" %in% raw_data$metric
+      )
+    ) {
+    
+    return("Not enough data to classify, aborting process.")
+    
+  }
   
   #reformat data
   reformatted <- raw_data |>
@@ -305,27 +402,39 @@ add_climate_classes <- function(conn, city_id) {
         metric
       )
     ) |>
-    group_by(country_code, city_code, month, metric, units) |>
+    group_by(month, metric, units) |>
     filter(value == max(value, na.rm = T)) |>
     ungroup() |>
     #only relevant classifications, in C/mm
-    filter(metric %in% c("Daily mean", "Average precipitation") & str_detect(units,"C|mm")) |>
+    filter(
+      metric %in% c("Daily mean", "Average precipitation") &
+        str_detect(units,"C|mm")
+      ) |>
     select(-units) |>
+    select(-record_no) |>
     distinct() |>
-    pivot_wider(names_from  = metric, values_from = value) |>
+    pivot_wider(names_from = metric, values_from = value) |>
     filter(!is.na(`Daily mean` & !is.na(`Average precipitation`))) |>
+    mutate(country_code = unique(country$country_code)) |>
     #add oin hemisphere
     left_join(
-      countries |>
+      country |>
         select(country_code, hemisphere),
       by = "country_code"
     )
   
   #check there is data left to process
-  if(nrow(reformatted == 0)) {
+  if(nrow(reformatted) == 0) {
     
     
-    stop("Not enough data for city to classify, aborting process.")
+    return("Not enough data for city to classify, aborting process.")
+    
+  }
+  
+  #check hemisphere and stop if TBD
+  if(unique(reformatted$hemisphere) == "TBD") {
+    
+    return("Hemisphere not set so cannot determine climate class, aborting process.")
     
   }
   
@@ -353,11 +462,13 @@ add_climate_classes <- function(conn, city_id) {
   #convert ktc/kgc to number
   ktc_num <- class_lookup |> 
     filter(classification_id == 1 & class_code == ktc_class) |>
-    pull(class_id)
+    pull(class_id) |>
+    as.numeric()
   
   kgc_num <- class_lookup |>
     filter(classification_id == 2 & class_code == kgc_class) |>
-    pull(class_id)
+    pull(class_id) |>
+    as.numeric()
   
   #upload df
   upload_df <- data.frame(
@@ -410,7 +521,8 @@ get_ktc_class <- function(df, month_col, temp_col, prcp_col, hemisphere_col) {
   #tcoldest month temp
   cmt <- df |>
     filter({{temp_col}} == min({{temp_col}}, na.rm = T)) |>
-    pull({{temp_col}})
+    pull({{temp_col}}) |>
+    unique()
   
   #summer dry months
   sdm <- df |>
@@ -461,7 +573,8 @@ get_ktc_class <- function(df, month_col, temp_col, prcp_col, hemisphere_col) {
   #warmest month temp
   wmt <- df |>
     filter({{temp_col}} == max({{temp_col}}, na.rm = T)) |>
-    pull({{temp_col}})
+    pull({{temp_col}}) |>
+    unique()
   
   #coldest month check already done as part of tropical checks
   
@@ -469,36 +582,42 @@ get_ktc_class <- function(df, month_col, temp_col, prcp_col, hemisphere_col) {
   dsp <- df |>
     filter({{month_col}} %in% high_sun_months) |>
     filter({{prcp_col}} == min({{prcp_col}}, na.rm = T)) |>
-    pull({{prcp_col}})
+    pull({{prcp_col}}) |>
+    unique()
   
   #driest winter month
   dwp <- df |>
     filter(!{{month_col}} %in% high_sun_months) |>
     filter({{prcp_col}} == min({{prcp_col}}, na.rm = T)) |>
-    pull({{prcp_col}})
+    pull({{prcp_col}}) |>
+    unique()
   
   #wettest summer month
   wsp <- df |>
     filter({{month_col}} %in% high_sun_months) |>
     filter({{prcp_col}} == max({{prcp_col}}, na.rm = T)) |>
-    pull({{prcp_col}})
+    pull({{prcp_col}}) |>
+    unique()
   
   #wettest winter month
   wwwp <- df |>
     filter(!{{month_col}} %in% high_sun_months) |>
     filter({{prcp_col}} == max({{prcp_col}}, na.rm = T)) |>
-    pull({{prcp_col}})
+    pull({{prcp_col}}) |>
+    unique()
   
   #temperature of warmest four months
   wfm <- df |>
     arrange(desc({{temp_col}})) |>
     slice(1:4) |>
-    pull({{temp_col}})
+    pull({{temp_col}}) |>
+    unique()
   
   #driest month prcp
   dmp <- df |>
     filter({{prcp_col}} == min({{prcp_col}}, na.rm = T)) |>
-    pull({{prcp_col}})
+    pull({{prcp_col}}) |>
+    unique()
   
   #give classification###########################################
   
@@ -507,7 +626,6 @@ get_ktc_class <- function(df, month_col, temp_col, prcp_col, hemisphere_col) {
     cmt >= 18 & dmn < 3 ~ "Ar",
     cmt >= 18 & sdm >= 3 ~ "As",
     cmt >= 18 & wdm >= 3 ~ "Aw",
-    cmt >= 18 & dmn >= 3 & dmn < 3 & wdm < 3 ~ "Am",
     #dry
     tr < dpt / 2 & 
       cmt > 0 & cmt < 18 & m10 >= 8 ~ "BWh",
@@ -567,10 +685,10 @@ get_kgc_class <- function(df, month_col, temp_col, prcp_col, hemisphere_col) {
   #topical checks###########################################
   
   #coldest month temp
-  cmt <- df |> pull({{temp_col}}) |> min(na.rm = T)
+  cmt <- df |> pull({{temp_col}}) |> min(na.rm = T) |> unique()
   
   #driest month precipitation
-  dmp <- df |> pull({{prcp_col}}) |> min(na.rm = T)
+  dmp <- df |> pull({{prcp_col}}) |> min(na.rm = T) |> unique()
   
   #topical mw threshold
   tmwt <- 100 - (tr / 25)
@@ -599,7 +717,7 @@ get_kgc_class <- function(df, month_col, temp_col, prcp_col, hemisphere_col) {
     unique()
   
   #warmest month temp
-  wmt <- df |> pull({{temp_col}}) |> max(na.rm = T)
+  wmt <- df |> pull({{temp_col}}) |> max(na.rm = T) |> unique()
   
   #temperature of coldest month already calculated in tropical checks
   
@@ -620,25 +738,29 @@ get_kgc_class <- function(df, month_col, temp_col, prcp_col, hemisphere_col) {
   wlsp <- df |>
     filter(!{{month_col}} %in% high_sun_months) |>
     filter({{prcp_col}} == max({{prcp_col}}, na.rm = T)) |>
-    pull({{prcp_col}})
+    pull({{prcp_col}}) |>
+    unique()
   
   #driest low-sub month prcp
   dlsp <- df |>
     filter(!{{month_col}} %in% high_sun_months) |>
     filter({{prcp_col}} == min({{prcp_col}}, na.rm = T)) |>
-    pull({{prcp_col}})
+    pull({{prcp_col}}) |>
+    unique()
   
   #wettest high sun month prcp
   whsp <- df |>
     filter({{month_col}} %in% high_sun_months) |>
     filter({{prcp_col}} == max({{prcp_col}}, na.rm = T)) |>
-    pull({{prcp_col}})
+    pull({{prcp_col}}) |>
+    unique()
   
   #driest high sun month precipitation
   dhsp <- df |>
     filter({{month_col}} %in% high_sun_months) |>
     filter({{prcp_col}} == min({{prcp_col}}, na.rm = T)) |>
-    pull({{prcp_col}})
+    pull({{prcp_col}}) |>
+    unique()
   
   #wetetst low sun to driest high sun ratio
   wlsp_dhsp <- wlsp / dhsp
@@ -711,7 +833,7 @@ full_data_upload <- function(URL) {
   message("Uploaded URL")
   
   #get location from the URL
-  CITY <- get_location_from_url(URL)
+  CITY <- get_location_from_url(URL, dbCon)
   
   #upload the city
   add_city(dbCon, CITY)
@@ -730,6 +852,9 @@ full_data_upload <- function(URL) {
   add_climate_classes(dbCon, CITY$id)
   
   message("Uploaded climate classifications - complete")
+  
+  #disconnect
+  DBI::dbDisconnect(dbCon)
   
 }
 
