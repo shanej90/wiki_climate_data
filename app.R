@@ -378,10 +378,10 @@ server <- function(input, output) {
     #map
     leaflet(data = df) |>
       setMaxBounds(
-        min(df$long) - 3,
-        min(df$lat) - 3,
-        max(df$long) + 3,
-        max(df$lat) + 3
+        min(df$long) - 5,
+        min(df$lat) - 5,
+        max(df$long) + 5,
+        max(df$lat) + 5
       ) |>
       addTiles() |>
       addMarkers(~long, ~lat, label = ~city_name)
