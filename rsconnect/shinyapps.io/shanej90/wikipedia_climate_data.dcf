@@ -1,0 +1,11 @@
+name: wikipedia_climate_data
+title:
+username:
+account: shanej90
+server: shinyapps.io
+hostUrl: https://api.shinyapps.io/v1
+appId: 7132213
+bundleId: 6342396
+url: https://shanej90.shinyapps.io/wikipedia_climate_data/
+when: 1664269704.77323
+lastSyncTime: 1664269704.77324
