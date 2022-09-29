@@ -138,6 +138,16 @@ get_climate_data <- function(.url) {
   climate_tbl <- all_tbls[grep("climate data", all_tbls, ignore.case = T)]
   climate_df <- html_table(climate_tbl[[1]]) #always take the first one
   
+  #fix for if months are header rather than first row
+  if("Month" %in% colnames(climate_df)) {
+    
+    first_row <- colnames(climate_df)
+    names(first_row) <- colnames(climate_df)
+    
+    climate_df <- bind_rows(first_row, climate_df)
+    
+  }
+  
   #extract the timeframe
   timeband <- colnames(climate_df)[1] |>
     str_extract("[1-2][0-9][0-9][0-9]–[1-2][0-9][0-9][0-9]")
@@ -164,7 +174,7 @@ get_climate_data <- function(.url) {
     #remove extraneous column
     select(-temp) |>
     #taller format
-    pivot_longer(cols = -Month, names_to = "metric", values_to = "value") |>
+    pivot_longer(cols = !starts_with("Month"), names_to = "metric", values_to = "value") |>
     #remove annual total/average
     filter(Month != "Year") |>
     #get units
